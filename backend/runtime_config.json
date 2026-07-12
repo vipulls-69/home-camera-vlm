@@ -1,0 +1,53 @@
+{
+  "CAMERAS": [],
+  "DEFAULT_RULE": "Alert if any person",
+  "CAMERA_RULES": {
+    "laptop": "ALert if a person",
+    "l": "Alert any person with beard"
+  },
+  "CAMERA_RULE_CONSTRAINTS": {},
+  "ALERT_CHANNELS": [
+    "in_app"
+  ],
+  "ALERT_MIN_SEVERITY": {
+    "in_app": "low",
+    "slack": "low",
+    "webhook": "low",
+    "sms": "high",
+    "pagerduty": "critical"
+  },
+  "SLACK_WEBHOOK_URL": "",
+  "GENERIC_WEBHOOK_URL": "",
+  "TWILIO_ACCOUNT_SID": "",
+  "TWILIO_AUTH_TOKEN": "",
+  "TWILIO_FROM_NUMBER": "",
+  "ALERT_SMS_TO": "",
+  "PAGERDUTY_ROUTING_KEY": "",
+  "MOTION_THRESHOLD": 2.5,
+  "TARGET_FPS": 1,
+  "CONFIDENCE_THRESHOLD": 0.75,
+  "GROQ_API_KEY": "",
+  "VLM_MODEL": "meta-llama/llama-4-scout-17b-16e-instruct",
+  "TARGET_CLASSES": [
+    0,
+    1,
+    2,
+    3,
+    5,
+    7,
+    15,
+    16,
+    24,
+    26,
+    28
+  ],
+  "VLM_DISPATCH_COOLDOWN_SEC": 2.0,
+  "VLM_MAX_CONCURRENT_REQUESTS": 2,
+  "EVENT_DIFF_ENABLED": true,
+  "EVENT_DIFF_THRESHOLD": 20.0,
+  "LIVE_VIEW_FPS": 12,
+  "SAVE_INCIDENT_MEDIA": true,
+  "SAVE_INCIDENT_PHOTOS": true,
+  "SAVE_INCIDENT_VIDEOS": true,
+  "MEDIA_VIDEO_FPS": 5
+}

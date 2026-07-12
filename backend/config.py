@@ -1,0 +1,228 @@
+import os
+import json
+from dataclasses import dataclass, field
+
+@dataclass
+class Config:
+    # Video & sampling
+    VIDEO_SOURCE: str = os.getenv("VIDEO_SOURCE", "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")  # RTSP URL, video path, or webcam ID
+    TARGET_FPS: int = 1                                 # Baseline/idle sampling rate
+    ORIGINAL_FPS: int = 30                              # Fallback if unreadable from stream
+
+    # Dashboard Live View: the analysis pipeline above intentionally downsamples
+    # to TARGET_FPS (as low as 1 FPS at idle) to save YOLO/VLM compute - but the
+    # camera tiles in the dashboard should still look like smooth live video, not
+    # a slideshow. LIVE_VIEW_FPS is a SEPARATE, independent publish rate used only
+    # for the dashboard's MJPEG/snapshot preview, decoupled from analysis tiering.
+    LIVE_VIEW_FPS: int = 12
+
+    # Dashboard API (FastAPI/uvicorn) - serves live camera streams, config
+    # CRUD, and the WebSocket incident feed consumed by the Next.js dashboard.
+    API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
+    API_PORT: int = int(os.getenv("API_PORT", "8000"))
+
+    # Multi-Camera Fusion: list of independent camera feeds to ingest concurrently.
+    # Each entry needs a unique "id" (used for rules/timelines/logging) and a "source"
+    # (RTSP URL, file path, or webcam index). Defaults to a single camera backed by
+    # VIDEO_SOURCE so existing single-camera setups keep working unchanged.
+    CAMERAS: list[dict] = field(default_factory=lambda: [
+        {"id": "default", "source": os.getenv("VIDEO_SOURCE", "sample.mp4")}
+    ])
+
+    FUSION_ENABLED: bool = True
+    # Events from different cameras that land within this rolling window of each
+    # other are treated as one correlated incident (e.g. a person seen on the
+    # driveway camera and moments later on the porch camera).
+    FUSION_CORRELATION_WINDOW_SEC: float = 8.0
+    # Grace period to wait for additional correlated events before dispatching
+    # the fused incident to the alerting layer.
+    FUSION_FLUSH_DELAY_SEC: float = 3.0
+
+    # Adaptive Tiering: dynamically raise sampling rate when the scene is active,
+    # and relax back down to TARGET_FPS when the scene is quiet.
+    ADAPTIVE_FPS_ENABLED: bool = True
+    MAX_TARGET_FPS: int = 5                             # Ceiling used when motion is currently elevated
+    ADAPTIVE_FPS_COOLDOWN_SEC: float = 5.0               # Time of inactivity before falling back to TARGET_FPS
+
+    # Motion threshold
+    # Percentage of pixels that must change to trigger the semantic check.
+    # This is now used as the initial/fallback value; see adaptive settings below.
+    MOTION_THRESHOLD: float = 2.5
+
+    # Adaptive Tiering: auto-tune the effective motion threshold per-camera based on
+    # the rolling noise floor of the scene (e.g. windy trees vs. a static indoor hallway),
+    # instead of relying on one static global threshold.
+    ADAPTIVE_MOTION_ENABLED: bool = True
+    MOTION_BASELINE_WINDOW: int = 60                    # Rolling samples used to estimate scene noise
+    MOTION_ADAPTIVE_STDDEV_MULTIPLIER: float = 3.0       # Effective threshold = mean + K * stddev
+    MOTION_THRESHOLD_MIN: float = 1.0                    # Never adapt below this (stay sensitive)
+    MOTION_THRESHOLD_MAX: float = 15.0                   # Never adapt above this (stay usable)
+
+    # Semantic gating
+    YOLO_MODEL: str = "yolov8n.pt"                      # Nano model for edge optimization
+    CONFIDENCE_THRESHOLD: float = 0.75
+    # Target classes based on COCO dataset. Broadened beyond the original
+    # person/car/motorcycle set so common household/rule scenarios (e.g.
+    # "alert on dogs after 4pm", "alert on unattended bags") are detectable
+    # out of the box. Customizable from the dashboard (Configuration > Rules).
+    TARGET_CLASSES: set[int] = field(default_factory=lambda: {0, 1, 2, 3, 5, 7, 15, 16, 24, 26, 28})
+    COCO_CLASS_NAMES: dict[int, str] = field(default_factory=lambda: {
+        0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck",
+        15: "cat", 16: "dog", 24: "backpack", 26: "handbag", 28: "suitcase",
+    })
+
+    # Re-identification / tracking
+    # Uses YOLO's built-in multi-object tracker so a single lingering/loitering
+    # subject is treated as ONE ongoing event instead of re-triggering repeatedly.
+    TRACKER: str = "bytetrack.yaml"
+    TRACK_COOLDOWN_SEC: float = 60.0                    # Suppress re-triggering the same track ID within this window
+    TRACK_STALE_SEC: float = 30.0                       # Forget a track ID if it hasn't been seen in this long
+
+    # Context Buffering
+    # 5 seconds pre-trigger and 5 seconds post-trigger at TARGET_FPS
+    BUFFER_SIZE_FRAMES: int = 5
+
+    # Final diff-match gate: right before a captured event is sent to the cloud
+    # VLM, compare frames spread across the whole event buffer (pre + post
+    # trigger) and only dispatch if the max structural change between any two
+    # of them clears this threshold. Filters out gatekeeper triggers where the
+    # scene never meaningfully changed (e.g. an already-stationary subject).
+    EVENT_DIFF_ENABLED: bool = True
+    EVENT_DIFF_THRESHOLD: float = 15.0  # percentage of changed pixels
+
+    # Cloud VLM integration
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    VLM_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    # Rate limiting for cloud VLM calls: without this, a noisy scene (or a
+    # tracker repeatedly failing to keep a stable ID) can fire a fresh Groq
+    # request on almost every trigger. VLM_DISPATCH_COOLDOWN_SEC enforces a
+    # minimum gap between two dispatches on the SAME camera (independent of
+    # per-track dedup below), and VLM_MAX_CONCURRENT_REQUESTS caps how many
+    # VLM calls may be in-flight at once across ALL cameras.
+    VLM_DISPATCH_COOLDOWN_SEC: float = 3.0
+    VLM_MAX_CONCURRENT_REQUESTS: int = 2
+
+    # Natural Language Rules Engine
+    # Each camera can be configured with a plain-English rule describing what
+    # counts as an alertable incident. The rule text is injected directly into
+    # the VLM prompt (prompt templating) rather than hand-parsed, letting the
+    # model itself judge whether the observed event matches the operator's intent.
+    # Keyed by camera "id" from CAMERAS above; falls back to DEFAULT_RULE.
+    DEFAULT_RULE: str = os.getenv(
+        "DEFAULT_RULE",
+        "Alert on any person, car, or motorcycle detected in view (matching just one of these is sufficient)."
+    )
+    CAMERA_RULES: dict[str, str] = field(default_factory=lambda: {
+        # "front_door": "Alert me only if a person is at the front door after "
+        #               "10pm and is not wearing a delivery uniform.",
+    })
+
+    # Structured Rule Constraints: a hard, non-AI pre-filter layered on top of
+    # the free-text rule above. Each camera maps to a list of constraints;
+    # an event is only escalated to the VLM if it matches AT LEAST ONE
+    # constraint (OR across the list). Within a single constraint, all set
+    # fields must match (AND) - e.g. classes=["dog"] + start_time="16:00" means
+    # "a dog, and only after 4pm". An empty list means "no hard constraint,
+    # rely on the free-text rule alone" (the legacy behavior).
+    #   {
+    #     "classes": ["dog"],            # COCO class names; empty/omitted = any
+    #     "days": ["mon", "tue"],         # 3-letter lowercase day codes; empty = every day
+    #     "start_time": "16:00",          # "HH:MM" 24h; empty = no lower bound
+    #     "end_time": "23:59",            # "HH:MM" 24h; supports overnight wraparound
+    #     "note": "free-text hint forwarded to the VLM prompt",
+    #   }
+    CAMERA_RULE_CONSTRAINTS: dict[str, list[dict]] = field(default_factory=dict)
+
+    # Multi-Modal Alert Routing
+    # Structured incident reports (severity, entities, bounding boxes, summary) are
+    # dispatched to one or more channels depending on configured severity thresholds.
+    # "in_app" pushes the incident to the dashboard's WebSocket feed, which drives
+    # a toast + severity-based sound/haptics in the Next.js UI.
+    ALERT_CHANNELS: set[str] = field(default_factory=lambda: {"in_app", "slack", "webhook"})
+    ALERT_MIN_SEVERITY: dict[str, str] = field(default_factory=lambda: {
+        "in_app": "low",
+        "slack": "low",
+        "webhook": "low",
+        "sms": "high",
+        "pagerduty": "critical",
+    })
+    SEVERITY_LEVELS: list[str] = field(default_factory=lambda: ["low", "medium", "high", "critical"])
+
+    SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")
+    GENERIC_WEBHOOK_URL: str = os.getenv("GENERIC_WEBHOOK_URL", "")
+
+    TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
+    TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
+    TWILIO_FROM_NUMBER: str = os.getenv("TWILIO_FROM_NUMBER", "")
+    ALERT_SMS_TO: str = os.getenv("ALERT_SMS_TO", "")
+
+    PAGERDUTY_ROUTING_KEY: str = os.getenv("PAGERDUTY_ROUTING_KEY", "")
+
+    # Incident Media Capture: when enabled, a snapshot photo (the sharpest
+    # trigger-adjacent frame) and a short MP4 clip of the full event buffer
+    # (pre + post trigger context) are saved to disk for every dispatched
+    # incident, and served back to the dashboard via /media/*.
+    SAVE_INCIDENT_MEDIA: bool = False
+    SAVE_INCIDENT_PHOTOS: bool = True
+    SAVE_INCIDENT_VIDEOS: bool = True
+    MEDIA_DIR: str = os.getenv("MEDIA_DIR", "media")
+    MEDIA_VIDEO_FPS: int = 5
+
+
+# --- Runtime overrides persistence -----------------------------------------
+# Lets the dashboard's Configuration page edit cameras/rules/alert settings at
+# runtime and have them survive a process restart, without touching the
+# hardcoded dataclass defaults or requiring env var changes.
+CONFIG_OVERRIDES_PATH = os.getenv("CONFIG_OVERRIDES_PATH", "runtime_config.json")
+
+_OVERRIDABLE_FIELDS = [
+    "CAMERAS", "DEFAULT_RULE", "CAMERA_RULES", "CAMERA_RULE_CONSTRAINTS",
+    "ALERT_CHANNELS", "ALERT_MIN_SEVERITY",
+    "SLACK_WEBHOOK_URL", "GENERIC_WEBHOOK_URL",
+    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "ALERT_SMS_TO",
+    "PAGERDUTY_ROUTING_KEY",
+    "MOTION_THRESHOLD", "TARGET_FPS", "CONFIDENCE_THRESHOLD",
+    "GROQ_API_KEY", "VLM_MODEL", "TARGET_CLASSES",
+    "VLM_DISPATCH_COOLDOWN_SEC", "VLM_MAX_CONCURRENT_REQUESTS",
+    "EVENT_DIFF_ENABLED", "EVENT_DIFF_THRESHOLD",
+    "LIVE_VIEW_FPS",
+    "SAVE_INCIDENT_MEDIA", "SAVE_INCIDENT_PHOTOS", "SAVE_INCIDENT_VIDEOS",
+    "MEDIA_VIDEO_FPS",
+]
+
+# Fields that are Python `set`s on the dataclass but must round-trip through
+# JSON as sorted lists.
+_SET_FIELDS = {"ALERT_CHANNELS", "TARGET_CLASSES"}
+
+
+def load_config_overrides(cfg: "Config"):
+    """Applies any previously saved dashboard edits on top of the defaults."""
+    if not os.path.exists(CONFIG_OVERRIDES_PATH):
+        return
+    try:
+        with open(CONFIG_OVERRIDES_PATH) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+    for key, value in data.items():
+        if key not in _OVERRIDABLE_FIELDS:
+            continue
+        if key in _SET_FIELDS:
+            value = set(value)
+        setattr(cfg, key, value)
+
+
+def save_config_overrides(cfg: "Config"):
+    """Persists the current values of dashboard-editable fields to disk."""
+    data = {}
+    for key in _OVERRIDABLE_FIELDS:
+        value = getattr(cfg, key)
+        if isinstance(value, set):
+            value = sorted(value)
+        data[key] = value
+    with open(CONFIG_OVERRIDES_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+config = Config()
+load_config_overrides(config)
