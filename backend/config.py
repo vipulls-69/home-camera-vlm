@@ -78,6 +78,22 @@ class Config:
     TRACK_COOLDOWN_SEC: float = 60.0                    # Suppress re-triggering the same track ID within this window
     TRACK_STALE_SEC: float = 30.0                       # Forget a track ID if it hasn't been seen in this long
 
+    # Distance approximation / far-field suppression
+    # Cameras aimed at a road or open area otherwise trigger a VLM call for
+    # every distant car or pedestrian passing through the far background.
+    # There's no depth sensor, so distance is approximated from the detected
+    # bounding box's area relative to the full frame - a subject far from the
+    # camera occupies a much smaller fraction of the frame than one nearby.
+    # A detection whose box-area ratio falls below the threshold is treated as
+    # "too far to matter" and is dropped before it can start/extend an event,
+    # cutting down on unnecessary API calls. 0 disables the filter entirely.
+    MIN_DETECTION_AREA_RATIO: float = 0.0
+    # Optional per-class overrides (keyed by COCO class name), since e.g. a car
+    # is physically much larger than a person and so appears "big enough" from
+    # farther away. Falls back to MIN_DETECTION_AREA_RATIO when a class isn't
+    # listed here.
+    MIN_DETECTION_AREA_RATIO_BY_CLASS: dict[str, float] = field(default_factory=dict)
+
     # Context Buffering
     # 5 seconds pre-trigger and 5 seconds post-trigger at TARGET_FPS
     BUFFER_SIZE_FRAMES: int = 5
@@ -188,6 +204,7 @@ _OVERRIDABLE_FIELDS = [
     "LIVE_VIEW_FPS",
     "SAVE_INCIDENT_MEDIA", "SAVE_INCIDENT_PHOTOS", "SAVE_INCIDENT_VIDEOS",
     "MEDIA_VIDEO_FPS",
+    "MIN_DETECTION_AREA_RATIO", "MIN_DETECTION_AREA_RATIO_BY_CLASS",
 ]
 
 # Fields that are Python `set`s on the dataclass but must round-trip through
