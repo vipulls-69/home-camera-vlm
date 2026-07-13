@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Config:
     # Video & sampling
-    VIDEO_SOURCE: str = os.getenv("VIDEO_SOURCE", "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")  # RTSP URL, video path, or webcam ID
+    VIDEO_SOURCE: str = os.getenv("VIDEO_SOURCE", "")  # RTSP URL, video path, or webcam ID
     TARGET_FPS: int = 1                                 # Baseline/idle sampling rate
     ORIGINAL_FPS: int = 30                              # Fallback if unreadable from stream
 
