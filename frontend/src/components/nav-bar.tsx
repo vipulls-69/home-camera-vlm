@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/", label: "Dashboard" },
-  { href: "/config", label: "Configuration" },
+  { href: "/config", label: "Settings" },
 ];
 
 export function NavBar() {
@@ -15,7 +15,9 @@ export function NavBar() {
 
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-white/80 backdrop-blur-md">
+      
       <div className="mx-auto flex h-14 max-w-6xl items-center align-left gap-2 px-4">
+        <div className="w-full"></div>
         <nav className="flex gap-1">
           {links.map((link) => {
             const active = pathname === link.href;

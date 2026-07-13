@@ -7,11 +7,19 @@ separate alerts. If FUSION_ENABLED is False, incidents are dispatched to
 alerting immediately and independently.
 """
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from config import config
 
 _SEVERITY_RANK = {level: i for i, level in enumerate(config.SEVERITY_LEVELS)}
+
+
+def _format_camera_label(camera_id: str) -> str:
+    """Turns a raw camera id like "front_door" into "Front Door" so generated
+    text reads naturally instead of exposing config identifiers."""
+    words = [w for w in re.split(r"[_-]+", camera_id) if w]
+    return " ".join(w.capitalize() for w in words) or camera_id
 
 
 @dataclass
@@ -97,10 +105,15 @@ class FusionEngine:
             for e in events_sorted
         ]
 
-        summary = (
-            f"Correlated activity across {len(cameras)} camera(s) ({', '.join(cameras)}): "
-            + " -> ".join(f"[{e.camera_id}] {e.incident.get('summary', '')[:80]}" for e in events_sorted)
-        )
+        camera_labels = [_format_camera_label(c) for c in cameras]
+        if len(events_sorted) == 1:
+            summary = events_sorted[0].incident.get("summary", "") or "Activity detected."
+        else:
+            steps = "; then ".join(
+                f"{_format_camera_label(e.camera_id)} saw {e.incident.get('summary', 'activity').rstrip('.').lower()}"
+                for e in events_sorted
+            )
+            summary = f"Activity moved across {', '.join(camera_labels)} — {steps}."
 
         # Surface the first event's saved media at the top level too, so a
         # single-camera "fused" incident (the common case) still shows a

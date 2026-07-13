@@ -2,10 +2,15 @@ import cv2
 import time
 import numpy as np
 from collections import deque
-from config import config
+from config import config, camera_setting
 
 class VideoProcessor:
-    def __init__(self):
+    def __init__(self, camera_id: str | None = None):
+        # When set, Detection Tuning fields resolve this camera's per-camera
+        # override (config.CAMERA_DETECTION_OVERRIDES) before falling back to
+        # the global default - see config.camera_setting.
+        self.camera_id = camera_id
+
         # Ring buffer of pre-trigger context frames.
         self.frame_buffer = deque(maxlen=config.BUFFER_SIZE_FRAMES)
         self.prev_frame_gray = None
@@ -13,16 +18,19 @@ class VideoProcessor:
         # Rolling window of recent quiet-scene change percentages, used to
         # estimate the noise floor so the motion threshold self-tunes per camera.
         self._motion_samples = deque(maxlen=config.MOTION_BASELINE_WINDOW)
-        self.effective_motion_threshold = config.MOTION_THRESHOLD
+        self.effective_motion_threshold = self._cfg("motion_threshold")
 
         # Last time motion was observed, so the loop can sample faster during
         # active periods and relax back to TARGET_FPS when quiet.
         self._last_motion_time = 0.0
 
+    def _cfg(self, key: str):
+        return camera_setting(config, self.camera_id, key)
+
     def _update_effective_threshold(self, change_percentage: float, triggered: bool):
         """Recompute the adaptive motion threshold from the recent noise floor."""
-        if not config.ADAPTIVE_MOTION_ENABLED:
-            self.effective_motion_threshold = config.MOTION_THRESHOLD
+        if not self._cfg("adaptive_motion_enabled"):
+            self.effective_motion_threshold = self._cfg("motion_threshold")
             return
 
         # Only feed quiet samples into the baseline so a real event doesn't
@@ -31,7 +39,7 @@ class VideoProcessor:
             self._motion_samples.append(change_percentage)
 
         if len(self._motion_samples) < max(5, config.MOTION_BASELINE_WINDOW // 4):
-            self.effective_motion_threshold = config.MOTION_THRESHOLD
+            self.effective_motion_threshold = self._cfg("motion_threshold")
             return
 
         mean = float(np.mean(self._motion_samples))
@@ -39,8 +47,8 @@ class VideoProcessor:
         adaptive = mean + config.MOTION_ADAPTIVE_STDDEV_MULTIPLIER * std
 
         self.effective_motion_threshold = min(
-            config.MOTION_THRESHOLD_MAX,
-            max(config.MOTION_THRESHOLD_MIN, adaptive),
+            self._cfg("motion_threshold_max"),
+            max(self._cfg("motion_threshold_min"), adaptive),
         )
 
     def is_significant_change(self, frame: np.ndarray) -> bool:
@@ -76,13 +84,13 @@ class VideoProcessor:
         Return a higher sampling rate while the scene is active, relaxing back
         to TARGET_FPS once quiet for ADAPTIVE_FPS_COOLDOWN_SEC seconds.
         """
-        if not config.ADAPTIVE_FPS_ENABLED:
-            return config.TARGET_FPS
+        if not self._cfg("adaptive_fps_enabled"):
+            return self._cfg("target_fps")
 
-        if (time.monotonic() - self._last_motion_time) <= config.ADAPTIVE_FPS_COOLDOWN_SEC:
-            return max(config.TARGET_FPS, config.MAX_TARGET_FPS)
+        if (time.monotonic() - self._last_motion_time) <= self._cfg("adaptive_fps_cooldown_sec"):
+            return max(self._cfg("target_fps"), self._cfg("max_target_fps"))
 
-        return config.TARGET_FPS
+        return self._cfg("target_fps")
 
     def update_buffer(self, frame: np.ndarray):
         """Maintains the rolling window of frames for pre-trigger context."""
@@ -99,7 +107,7 @@ class VideoProcessor:
         passes if the max structural change clears EVENT_DIFF_THRESHOLD, so
         events where the scene never meaningfully changes are skipped.
         """
-        if not config.EVENT_DIFF_ENABLED:
+        if not self._cfg("event_diff_enabled"):
             return True
         if len(frames) < 2:
             return True
@@ -122,4 +130,4 @@ class VideoProcessor:
             change_percentage = (np.count_nonzero(thresh) / thresh.size) * 100
             max_change_percentage = max(max_change_percentage, change_percentage)
 
-        return max_change_percentage >= config.EVENT_DIFF_THRESHOLD
+        return max_change_percentage >= self._cfg("event_diff_threshold")

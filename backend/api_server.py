@@ -8,6 +8,10 @@ pipeline (main.py) and exposes:
   GET             /api/detection-classes   - object classes available for the rule builder
   GET/PUT         /api/alerts/config       - manage alert channels/thresholds/webhooks
   GET/PUT         /api/llm/config          - manage the VLM provider API key/model
+  GET/PUT         /api/detection/config     - manage motion/gatekeeper/fusion tuning knobs
+  GET/PUT/DELETE  /api/detection/templates/{name} - user-saved custom Detection Tuning presets
+  GET/PUT/DELETE  /api/detection/config/{id} - per-camera Detection Tuning overrides
+  GET/PUT         /api/cameras/{id}/severity - force a fixed severity for one camera's incidents
   GET             /api/incidents           - recent incident history (REST snapshot)
   GET             /api/stream/{id}         - MJPEG live view for one camera (legacy)
   GET             /api/stream/{id}/snapshot - single latest JPEG frame, polled by the dashboard
@@ -32,7 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.requests import ClientDisconnect
 
-from config import config, save_config_overrides
+from config import config, save_config_overrides, camera_setting, _DETECTION_CONFIG_FIELDS
 from shared_state import shared_state
 
 app = FastAPI(title="AI Video Pipeline Dashboard API")
@@ -97,6 +101,44 @@ class MediaConfigIn(BaseModel):
     save_media: bool | None = None
     save_photos: bool | None = None
     save_videos: bool | None = None
+
+
+class DetectionConfigIn(BaseModel):
+    """Partial update for the Detection Tuning panel - every field is
+    optional so the dashboard can send just what changed (or a whole preset
+    template in one call)."""
+    motion_threshold: float | None = None
+    adaptive_motion_enabled: bool | None = None
+    motion_threshold_min: float | None = None
+    motion_threshold_max: float | None = None
+    confidence_threshold: float | None = None
+    min_detection_area_ratio: float | None = None
+    track_cooldown_sec: float | None = None
+    track_stale_sec: float | None = None
+    spatial_dedup_enabled: bool | None = None
+    spatial_dedup_iou_threshold: float | None = None
+    event_diff_enabled: bool | None = None
+    event_diff_threshold: float | None = None
+    vlm_dispatch_cooldown_sec: float | None = None
+    target_fps: int | None = None
+    adaptive_fps_enabled: bool | None = None
+    max_target_fps: int | None = None
+    adaptive_fps_cooldown_sec: float | None = None
+    fusion_enabled: bool | None = None
+    fusion_correlation_window_sec: float | None = None
+    fusion_flush_delay_sec: float | None = None
+
+
+class DetectionTemplateIn(BaseModel):
+    """A user-saved Detection Tuning preset - any subset of the same fields
+    as DetectionConfigIn, so a template can tune just a couple of knobs."""
+    values: DetectionConfigIn
+
+
+class CameraSeverityIn(BaseModel):
+    # None/omitted clears the override so the camera reverts to using the
+    # VLM's own severity assessment.
+    severity: str | None = None
 
 
 class ConstraintIn(BaseModel):
@@ -299,6 +341,170 @@ def update_media_config(body: MediaConfigIn):
         "save_photos": config.SAVE_INCIDENT_PHOTOS,
         "save_videos": config.SAVE_INCIDENT_VIDEOS,
     }
+
+
+# --- Detection Tuning ----------------------------------------------------
+# Surfaces the gatekeeper/motion/fusion tunables (normally only set via
+# config.py/env vars) on the dashboard, so operators can adjust sensitivity
+# per-deployment - e.g. a busy shop entrance needs different thresholds than
+# a quiet home driveway - and apply the "template" presets below.
+
+def _detection_config_dict():
+    return {
+        "motion_threshold": config.MOTION_THRESHOLD,
+        "adaptive_motion_enabled": config.ADAPTIVE_MOTION_ENABLED,
+        "motion_threshold_min": config.MOTION_THRESHOLD_MIN,
+        "motion_threshold_max": config.MOTION_THRESHOLD_MAX,
+        "confidence_threshold": config.CONFIDENCE_THRESHOLD,
+        "min_detection_area_ratio": config.MIN_DETECTION_AREA_RATIO,
+        "track_cooldown_sec": config.TRACK_COOLDOWN_SEC,
+        "track_stale_sec": config.TRACK_STALE_SEC,
+        "spatial_dedup_enabled": config.SPATIAL_DEDUP_ENABLED,
+        "spatial_dedup_iou_threshold": config.SPATIAL_DEDUP_IOU_THRESHOLD,
+        "event_diff_enabled": config.EVENT_DIFF_ENABLED,
+        "event_diff_threshold": config.EVENT_DIFF_THRESHOLD,
+        "vlm_dispatch_cooldown_sec": config.VLM_DISPATCH_COOLDOWN_SEC,
+        "target_fps": config.TARGET_FPS,
+        "adaptive_fps_enabled": config.ADAPTIVE_FPS_ENABLED,
+        "max_target_fps": config.MAX_TARGET_FPS,
+        "adaptive_fps_cooldown_sec": config.ADAPTIVE_FPS_COOLDOWN_SEC,
+        "fusion_enabled": config.FUSION_ENABLED,
+        "fusion_correlation_window_sec": config.FUSION_CORRELATION_WINDOW_SEC,
+        "fusion_flush_delay_sec": config.FUSION_FLUSH_DELAY_SEC,
+    }
+
+
+@app.get("/api/detection/config")
+def get_detection_config():
+    return _detection_config_dict()
+
+
+@app.put("/api/detection/config")
+def update_detection_config(body: DetectionConfigIn):
+    field_map = {
+        "motion_threshold": "MOTION_THRESHOLD",
+        "adaptive_motion_enabled": "ADAPTIVE_MOTION_ENABLED",
+        "motion_threshold_min": "MOTION_THRESHOLD_MIN",
+        "motion_threshold_max": "MOTION_THRESHOLD_MAX",
+        "confidence_threshold": "CONFIDENCE_THRESHOLD",
+        "min_detection_area_ratio": "MIN_DETECTION_AREA_RATIO",
+        "track_cooldown_sec": "TRACK_COOLDOWN_SEC",
+        "track_stale_sec": "TRACK_STALE_SEC",
+        "spatial_dedup_enabled": "SPATIAL_DEDUP_ENABLED",
+        "spatial_dedup_iou_threshold": "SPATIAL_DEDUP_IOU_THRESHOLD",
+        "event_diff_enabled": "EVENT_DIFF_ENABLED",
+        "event_diff_threshold": "EVENT_DIFF_THRESHOLD",
+        "vlm_dispatch_cooldown_sec": "VLM_DISPATCH_COOLDOWN_SEC",
+        "target_fps": "TARGET_FPS",
+        "adaptive_fps_enabled": "ADAPTIVE_FPS_ENABLED",
+        "max_target_fps": "MAX_TARGET_FPS",
+        "adaptive_fps_cooldown_sec": "ADAPTIVE_FPS_COOLDOWN_SEC",
+        "fusion_enabled": "FUSION_ENABLED",
+        "fusion_correlation_window_sec": "FUSION_CORRELATION_WINDOW_SEC",
+        "fusion_flush_delay_sec": "FUSION_FLUSH_DELAY_SEC",
+    }
+    updates = body.model_dump(exclude_unset=True, exclude_none=True)
+    for key, value in updates.items():
+        setattr(config, field_map[key], value)
+    if updates:
+        save_config_overrides(config)
+    return {"ok": True, **_detection_config_dict()}
+
+
+# --- Custom Detection Tuning Templates ------------------------------------
+# In addition to the dashboard's built-in Home/Shop/Warehouse/Office presets,
+# operators can save their own named tuning presets (any subset of the
+# Detection Tuning fields) and apply/attach them to specific cameras.
+
+@app.get("/api/detection/templates")
+def list_detection_templates():
+    return {"templates": config.CUSTOM_DETECTION_TEMPLATES}
+
+
+@app.put("/api/detection/templates/{name}")
+def upsert_detection_template(name: str, body: DetectionTemplateIn):
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required.")
+    values = body.values.model_dump(exclude_unset=True, exclude_none=True)
+    if not values:
+        raise HTTPException(status_code=400, detail="Template must include at least one setting.")
+    config.CUSTOM_DETECTION_TEMPLATES[name] = values
+    save_config_overrides(config)
+    return {"ok": True, "templates": config.CUSTOM_DETECTION_TEMPLATES}
+
+
+@app.delete("/api/detection/templates/{name}")
+def delete_detection_template(name: str):
+    config.CUSTOM_DETECTION_TEMPLATES.pop(name, None)
+    save_config_overrides(config)
+    return {"ok": True, "templates": config.CUSTOM_DETECTION_TEMPLATES}
+
+
+# --- Per-Camera Detection Tuning Overrides ---------------------------------
+# Lets a specific camera run "hotter" or "cooler" than the global default
+# (or have a template attached to it) without affecting every other camera.
+
+@app.get("/api/detection/config/{camera_id}")
+def get_camera_detection_config(camera_id: str):
+    overrides = config.CAMERA_DETECTION_OVERRIDES.get(camera_id, {})
+    effective = {
+        key: camera_setting(config, camera_id, key)
+        for key in _DETECTION_CONFIG_FIELDS
+    }
+    return {"effective": effective, "overrides": overrides}
+
+
+@app.put("/api/detection/config/{camera_id}")
+def update_camera_detection_config(camera_id: str, body: DetectionConfigIn):
+    updates = body.model_dump(exclude_unset=True, exclude_none=True)
+    if updates:
+        overrides = config.CAMERA_DETECTION_OVERRIDES.setdefault(camera_id, {})
+        overrides.update(updates)
+        save_config_overrides(config)
+    overrides = config.CAMERA_DETECTION_OVERRIDES.get(camera_id, {})
+    effective = {
+        key: camera_setting(config, camera_id, key)
+        for key in _DETECTION_CONFIG_FIELDS
+    }
+    return {"ok": True, "effective": effective, "overrides": overrides}
+
+
+@app.delete("/api/detection/config/{camera_id}")
+def clear_camera_detection_config(camera_id: str):
+    """Reverts a camera to the global Detection Tuning defaults."""
+    config.CAMERA_DETECTION_OVERRIDES.pop(camera_id, None)
+    save_config_overrides(config)
+    effective = {
+        key: camera_setting(config, camera_id, key)
+        for key in _DETECTION_CONFIG_FIELDS
+    }
+    return {"ok": True, "effective": effective, "overrides": {}}
+
+
+# --- Per-Camera Severity Override -----------------------------------------
+# Forces every incident from a given camera to a fixed severity level (e.g.
+# "camera 1 -> always critical"), instead of relying on the VLM's assessment.
+
+@app.get("/api/cameras/{camera_id}/severity")
+def get_camera_severity_override(camera_id: str):
+    return {
+        "severity": config.CAMERA_SEVERITY_OVERRIDE.get(camera_id),
+        "severity_levels": config.SEVERITY_LEVELS,
+    }
+
+
+@app.put("/api/cameras/{camera_id}/severity")
+def update_camera_severity_override(camera_id: str, body: CameraSeverityIn):
+    if body.severity:
+        if body.severity not in config.SEVERITY_LEVELS:
+            raise HTTPException(status_code=400, detail=f"Unknown severity level: {body.severity}")
+        config.CAMERA_SEVERITY_OVERRIDE[camera_id] = body.severity
+    else:
+        config.CAMERA_SEVERITY_OVERRIDE.pop(camera_id, None)
+    save_config_overrides(config)
+    return {"ok": True, "severity": config.CAMERA_SEVERITY_OVERRIDE.get(camera_id)}
+
 
 
 # --- Incidents + Live Streaming -----------------------------------------

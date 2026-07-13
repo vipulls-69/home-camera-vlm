@@ -70,6 +70,29 @@ export interface MediaConfig {
   save_videos: boolean;
 }
 
+export interface DetectionConfig {
+  motion_threshold: number;
+  adaptive_motion_enabled: boolean;
+  motion_threshold_min: number;
+  motion_threshold_max: number;
+  confidence_threshold: number;
+  min_detection_area_ratio: number;
+  track_cooldown_sec: number;
+  track_stale_sec: number;
+  spatial_dedup_enabled: boolean;
+  spatial_dedup_iou_threshold: number;
+  event_diff_enabled: boolean;
+  event_diff_threshold: number;
+  vlm_dispatch_cooldown_sec: number;
+  target_fps: number;
+  adaptive_fps_enabled: boolean;
+  max_target_fps: number;
+  adaptive_fps_cooldown_sec: number;
+  fusion_enabled: boolean;
+  fusion_correlation_window_sec: number;
+  fusion_flush_delay_sec: number;
+}
+
 export interface AlertConfig {
   channels: string[];
   min_severity: Record<string, Severity>;
@@ -97,6 +120,11 @@ export interface RuleConstraint {
   start_time: string | null;
   end_time: string | null;
   note: string | null;
+}
+
+export interface CameraDetectionConfig {
+  effective: DetectionConfig;
+  overrides: Partial<DetectionConfig>;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -178,6 +206,49 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+
+  getDetectionConfig: () => request<DetectionConfig>("/api/detection/config"),
+  updateDetectionConfig: (body: Partial<DetectionConfig>) =>
+    request<DetectionConfig & { ok: boolean }>("/api/detection/config", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  listDetectionTemplates: () =>
+    request<{ templates: Record<string, Partial<DetectionConfig>> }>("/api/detection/templates"),
+  saveDetectionTemplate: (name: string, values: Partial<DetectionConfig>) =>
+    request<{ ok: boolean; templates: Record<string, Partial<DetectionConfig>> }>(
+      `/api/detection/templates/${encodeURIComponent(name)}`,
+      { method: "PUT", body: JSON.stringify({ values }) }
+    ),
+  deleteDetectionTemplate: (name: string) =>
+    request<{ ok: boolean; templates: Record<string, Partial<DetectionConfig>> }>(
+      `/api/detection/templates/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    ),
+
+  getCameraDetectionConfig: (cameraId: string) =>
+    request<CameraDetectionConfig>(`/api/detection/config/${encodeURIComponent(cameraId)}`),
+  updateCameraDetectionConfig: (cameraId: string, body: Partial<DetectionConfig>) =>
+    request<CameraDetectionConfig & { ok: boolean }>(
+      `/api/detection/config/${encodeURIComponent(cameraId)}`,
+      { method: "PUT", body: JSON.stringify(body) }
+    ),
+  clearCameraDetectionConfig: (cameraId: string) =>
+    request<CameraDetectionConfig & { ok: boolean }>(
+      `/api/detection/config/${encodeURIComponent(cameraId)}`,
+      { method: "DELETE" }
+    ),
+
+  getCameraSeverityOverride: (cameraId: string) =>
+    request<{ severity: Severity | null; severity_levels: Severity[] }>(
+      `/api/cameras/${encodeURIComponent(cameraId)}/severity`
+    ),
+  updateCameraSeverityOverride: (cameraId: string, severity: Severity | null) =>
+    request<{ ok: boolean; severity: Severity | null }>(
+      `/api/cameras/${encodeURIComponent(cameraId)}/severity`,
+      { method: "PUT", body: JSON.stringify({ severity }) }
+    ),
 
   streamUrl: (cameraId: string) => `${API_BASE}/api/stream/${encodeURIComponent(cameraId)}`,
   snapshotUrl: (cameraId: string) =>

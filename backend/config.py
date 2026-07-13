@@ -78,6 +78,18 @@ class Config:
     TRACK_COOLDOWN_SEC: float = 60.0                    # Suppress re-triggering the same track ID within this window
     TRACK_STALE_SEC: float = 30.0                       # Forget a track ID if it hasn't been seen in this long
 
+    # Backstop for when the tracker itself fails to keep a stable ID for a
+    # subject that hasn't actually left (common at low sampling FPS, or after
+    # brief occlusion) - without this, an ID "churn" event bypasses
+    # TRACK_COOLDOWN_SEC entirely and fires a fresh VLM call for what is
+    # still the same physical person/object. Any new track ID (or untracked
+    # detection) is compared against recently-triggered boxes of the same
+    # class; if it overlaps closely enough with one still inside its cooldown
+    # window, it's treated as the same subject and suppressed instead of
+    # starting a new event.
+    SPATIAL_DEDUP_ENABLED: bool = True
+    SPATIAL_DEDUP_IOU_THRESHOLD: float = 0.3            # Min IoU with a recent same-class box to count as "same subject"
+
     # Distance approximation / far-field suppression
     # Cameras aimed at a road or open area otherwise trigger a VLM call for
     # every distant car or pedestrian passing through the far background.
@@ -104,7 +116,7 @@ class Config:
     # of them clears this threshold. Filters out gatekeeper triggers where the
     # scene never meaningfully changed (e.g. an already-stationary subject).
     EVENT_DIFF_ENABLED: bool = True
-    EVENT_DIFF_THRESHOLD: float = 15.0  # percentage of changed pixels
+    EVENT_DIFF_THRESHOLD: float = 80.0  # percentage of changed pixels
 
     # Cloud VLM integration
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
@@ -184,6 +196,63 @@ class Config:
     MEDIA_DIR: str = os.getenv("MEDIA_DIR", "media")
     MEDIA_VIDEO_FPS: int = 5
 
+    # Per-camera Detection Tuning overrides: keyed by camera "id", each maps
+    # to a partial dict of the same fields exposed on the dashboard's
+    # Detection Tuning tab (see _DETECTION_CONFIG_FIELDS below). A camera
+    # without an entry (or a field missing from its entry) falls back to the
+    # global default above - so a shop's front counter camera can run "hot"
+    # while a quiet back-office camera stays on defaults, without maintaining
+    # a second full config.
+    CAMERA_DETECTION_OVERRIDES: dict[str, dict] = field(default_factory=dict)
+
+    # User-saved Detection Tuning templates (name -> partial field dict, same
+    # shape as one CAMERA_DETECTION_OVERRIDES entry), in addition to the
+    # built-in Home/Shop/Warehouse/Office presets defined in the dashboard.
+    CUSTOM_DETECTION_TEMPLATES: dict[str, dict] = field(default_factory=dict)
+
+    # Per-camera severity override: forces every incident from this camera to
+    # the given severity level (e.g. "camera 1 -> always critical"), instead
+    # of relying on the VLM's own assessment. Keyed by camera "id"; a camera
+    # with no entry uses the VLM-assigned severity unchanged.
+    CAMERA_SEVERITY_OVERRIDE: dict[str, str] = field(default_factory=dict)
+
+
+# Maps the Detection Tuning dashboard's field names to this Config class's
+# attribute names, so per-camera overrides and the /api/detection/config
+# endpoints can resolve either name generically instead of a long if/elif chain.
+_DETECTION_CONFIG_FIELDS = {
+    "motion_threshold": "MOTION_THRESHOLD",
+    "adaptive_motion_enabled": "ADAPTIVE_MOTION_ENABLED",
+    "motion_threshold_min": "MOTION_THRESHOLD_MIN",
+    "motion_threshold_max": "MOTION_THRESHOLD_MAX",
+    "confidence_threshold": "CONFIDENCE_THRESHOLD",
+    "min_detection_area_ratio": "MIN_DETECTION_AREA_RATIO",
+    "track_cooldown_sec": "TRACK_COOLDOWN_SEC",
+    "track_stale_sec": "TRACK_STALE_SEC",
+    "spatial_dedup_enabled": "SPATIAL_DEDUP_ENABLED",
+    "spatial_dedup_iou_threshold": "SPATIAL_DEDUP_IOU_THRESHOLD",
+    "event_diff_enabled": "EVENT_DIFF_ENABLED",
+    "event_diff_threshold": "EVENT_DIFF_THRESHOLD",
+    "vlm_dispatch_cooldown_sec": "VLM_DISPATCH_COOLDOWN_SEC",
+    "target_fps": "TARGET_FPS",
+    "adaptive_fps_enabled": "ADAPTIVE_FPS_ENABLED",
+    "max_target_fps": "MAX_TARGET_FPS",
+    "adaptive_fps_cooldown_sec": "ADAPTIVE_FPS_COOLDOWN_SEC",
+}
+
+
+def camera_setting(cfg: "Config", camera_id: str | None, key: str):
+    """Effective value of one Detection Tuning field for a specific camera:
+    a per-camera override if set (config.CAMERA_DETECTION_OVERRIDES), else
+    the global default. `key` is the dashboard's snake_case field name (see
+    _DETECTION_CONFIG_FIELDS)."""
+    attr = _DETECTION_CONFIG_FIELDS[key]
+    if camera_id:
+        override = cfg.CAMERA_DETECTION_OVERRIDES.get(camera_id, {})
+        if key in override:
+            return override[key]
+    return getattr(cfg, attr)
+
 
 # --- Runtime overrides persistence -----------------------------------------
 # Lets the dashboard's Configuration page edit cameras/rules/alert settings at
@@ -205,6 +274,16 @@ _OVERRIDABLE_FIELDS = [
     "SAVE_INCIDENT_MEDIA", "SAVE_INCIDENT_PHOTOS", "SAVE_INCIDENT_VIDEOS",
     "MEDIA_VIDEO_FPS",
     "MIN_DETECTION_AREA_RATIO", "MIN_DETECTION_AREA_RATIO_BY_CLASS",
+    # Detection tuning knobs surfaced on the dashboard's Configuration >
+    # Detection Tuning panel, so operators can adjust sensitivity/cooldowns
+    # per-deployment (home, shop, warehouse, etc.) without editing this file.
+    "ADAPTIVE_MOTION_ENABLED", "MOTION_BASELINE_WINDOW",
+    "MOTION_ADAPTIVE_STDDEV_MULTIPLIER", "MOTION_THRESHOLD_MIN", "MOTION_THRESHOLD_MAX",
+    "TRACK_COOLDOWN_SEC", "TRACK_STALE_SEC",
+    "SPATIAL_DEDUP_ENABLED", "SPATIAL_DEDUP_IOU_THRESHOLD",
+    "ADAPTIVE_FPS_ENABLED", "MAX_TARGET_FPS", "ADAPTIVE_FPS_COOLDOWN_SEC",
+    "FUSION_ENABLED", "FUSION_CORRELATION_WINDOW_SEC", "FUSION_FLUSH_DELAY_SEC",
+    "CAMERA_DETECTION_OVERRIDES", "CUSTOM_DETECTION_TEMPLATES", "CAMERA_SEVERITY_OVERRIDE",
 ]
 
 # Fields that are Python `set`s on the dataclass but must round-trip through

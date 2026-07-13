@@ -27,34 +27,34 @@ const KIND_COPY: Record<
   rtsp: {
     label: "IP / RTSP Camera",
     help: "Most home security and PoE cameras expose an RTSP stream. Check the camera's manual or app for its RTSP URL.",
-    placeholder: "rtsp://username:password@192.168.1.50:554/stream1",
-    idHint: "front_door",
+    placeholder: "Camera URL",
+    idHint: "Front Door Cam",
   },
   mobile: {
     label: "Mobile Phone Camera",
     help:
       'Turn a spare phone into a camera with a free app (e.g. "IP Webcam" for Android, "EpocCam" for iOS), then paste the stream URL it shows on-screen.',
-    placeholder: "http://192.168.1.23:8080/video",
-    idHint: "kitchen_phone",
+    placeholder: "URL Shown in App",
+    idHint: "John's Phone Cam",
   },
   webcam: {
     label: "USB Webcam",
-    help: "A locally attached webcam, referenced by its device index (0 is usually the first/built-in camera).",
-    placeholder: "0",
-    idHint: "desk_webcam",
+    help: "A locally attached webcam, referenced by its device index.",
+    placeholder: "USB Port",
+    idHint: "Living Room Webcam",
   },
   laptop: {
     label: "This Device's Webcam",
     help:
-      "Streams directly from this browser's own camera - no server-side hardware access needed. You'll be asked for camera permission, and this browser tab must stay open for the feed to keep streaming.",
-    placeholder: "",
-    idHint: "laptop_webcam",
+      "Streams directly from this browser's own camera. You may need to grant permission for the browser to access the camera.",
+    placeholder: "This Device",
+    idHint: "Laptop Webcam",
   },
   file: {
     label: "Demo / Video File",
     help: "Useful for testing the pipeline without real hardware - point to any local video file path.",
-    placeholder: "sample.mp4",
-    idHint: "demo",
+    placeholder: "Video File",
+    idHint: "File Name",
   },
 };
 
@@ -104,7 +104,7 @@ export function AddCameraDialog({ onSaved }: { onSaved: (cameras: Camera[]) => v
           Connect a Camera
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Connect a camera</DialogTitle>
           <DialogDescription>
@@ -113,18 +113,18 @@ export function AddCameraDialog({ onSaved }: { onSaved: (cameras: Camera[]) => v
         </DialogHeader>
 
         <Tabs value={kind} onValueChange={(v) => setKind(v as CameraKind)}>
-          <TabsList className="grid w-full grid-cols-5">
-            <TabsTrigger value="rtsp">IP</TabsTrigger>
-            <TabsTrigger value="mobile">Mobile</TabsTrigger>
-            <TabsTrigger value="webcam">Webcam</TabsTrigger>
-            <TabsTrigger value="laptop">This Device</TabsTrigger>
-            <TabsTrigger value="file">Demo</TabsTrigger>
+          <TabsList className="grid h-auto w-full grid-cols-5 gap-1">
+            <TabsTrigger value="rtsp" className="whitespace-normal px-1 py-1.5 text-xs leading-tight">Camera</TabsTrigger>
+            <TabsTrigger value="mobile" className="whitespace-normal px-1 py-1.5 text-xs leading-tight">Mobile</TabsTrigger>
+            <TabsTrigger value="webcam" className="whitespace-normal px-1 py-1.5 text-xs leading-tight">Webcam</TabsTrigger>
+            <TabsTrigger value="laptop" className="whitespace-normal px-1 py-1.5 text-xs leading-tight">My Device</TabsTrigger>
+            <TabsTrigger value="file" className="whitespace-normal px-1 py-1.5 text-xs leading-tight">Video File</TabsTrigger>
           </TabsList>
-          <TabsContent value={kind} className="flex flex-col gap-3 pt-1">
+          <TabsContent value={kind} className="flex flex-col gap-4 pt-4">
             <p className="text-xs leading-relaxed text-muted-foreground">{copy.help}</p>
 
-            <div>
-              <Label htmlFor="new-cam-id" className="mb-1.5">Camera Name</Label>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="new-cam-id">Camera Name</Label>
               <Input
                 id="new-cam-id"
                 placeholder={copy.idHint}
@@ -133,8 +133,8 @@ export function AddCameraDialog({ onSaved }: { onSaved: (cameras: Camera[]) => v
               />
             </div>
             {kind !== "laptop" && (
-              <div>
-                <Label htmlFor="new-cam-source" className="mb-1.5">{copy.label} Source</Label>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="new-cam-source">{copy.label} Source</Label>
                 <Input
                   id="new-cam-source"
                   placeholder={copy.placeholder}

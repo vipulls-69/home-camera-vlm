@@ -20,9 +20,6 @@ function CameraCardSkeleton() {
         <Skeleton className="h-4 w-12" />
       </div>
       <Skeleton className="aspect-video w-full rounded-none" />
-      <div className="border-t border-border px-3 py-2">
-        <Skeleton className="h-3 w-32" />
-      </div>
     </Card>
   );
 }
@@ -155,12 +152,14 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
-          <Card className="rounded-sm">
-          <CardContent className="flex flex-col gap-3 py-4 bg-card border-border p-4">
 
-            {loading ? <IncidentFeedSkeleton /> : <IncidentFeed incidents={incidents} />}
-          </CardContent>
-      </Card>
+        {(loading || incidents.length > 0) && (
+          <Card className="rounded-sm">
+            <CardContent className="flex flex-col gap-3 py-4 bg-card border-border p-4">
+              {loading ? <IncidentFeedSkeleton /> : <IncidentFeed incidents={incidents} />}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );

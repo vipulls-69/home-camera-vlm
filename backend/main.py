@@ -5,7 +5,7 @@ import dataclasses
 import cv2
 import numpy as np
 import asyncio
-from config import config
+from config import config, camera_setting
 from video_processor import VideoProcessor
 from gatekeeper import Gatekeeper
 from vlm_client import VLMClient
@@ -49,8 +49,8 @@ async def run_camera_pipeline(
     """Run one camera's ingestion, pruning and gatekeeper state machine.
     One instance runs per entry in config.CAMERAS, sharing the VLM client,
     rules engine and fusion engine so events across cameras can be correlated."""
-    processor = VideoProcessor()
-    gatekeeper = Gatekeeper()
+    processor = VideoProcessor(camera_id)
+    gatekeeper = Gatekeeper(camera_id)
 
     cap = cv2.VideoCapture(video_source)
     if not cap.isOpened():
@@ -125,8 +125,8 @@ async def run_browser_camera_pipeline(
     backend has no direct access to that hardware. Frames are read from the
     shared ingestion queue instead of cv2.VideoCapture.
     """
-    processor = VideoProcessor()
-    gatekeeper = Gatekeeper()
+    processor = VideoProcessor(camera_id)
+    gatekeeper = Gatekeeper(camera_id)
     queue = shared_state.get_ingest_queue(camera_id)
     state = _new_event_state()
 
@@ -222,7 +222,8 @@ async def _process_frame(
     gate_result = gatekeeper.detect(frame)
     if gate_result.triggered:
         # Skip starting a new event if a dispatch fired too recently.
-        if (time.monotonic() - state["last_dispatch_time"]) < config.VLM_DISPATCH_COOLDOWN_SEC:
+        dispatch_cooldown = camera_setting(config, camera_id, "vlm_dispatch_cooldown_sec")
+        if (time.monotonic() - state["last_dispatch_time"]) < dispatch_cooldown:
             return
 
         detected_classes = {d.class_name for d in gate_result.detections}
@@ -254,6 +255,13 @@ async def dispatch_to_vlm(
     async with vlm_semaphore:
         incident = await vlm.analyze_event(frames, detections=detections, prompt=prompt)
     incident["camera_id"] = camera_id
+
+    # Some cameras (e.g. a monitored safe or entryway) should treat every
+    # event as the same severity regardless of the VLM's own assessment.
+    forced_severity = config.CAMERA_SEVERITY_OVERRIDE.get(camera_id)
+    if forced_severity and not incident.get("error"):
+        incident["severity"] = forced_severity
+        incident["severity_forced"] = True
 
     print(f"[{camera_id}] Incident report:")
     print(json.dumps(incident, indent=2, default=str))
