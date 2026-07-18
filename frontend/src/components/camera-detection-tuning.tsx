@@ -23,6 +23,28 @@ const SEVERITY_COPY: Partial<Record<Severity, string>> = {
   critical: "Critical",
 };
 
+/** Finds the name of a built-in or custom template whose values exactly
+ * match a camera's current overrides, so the "Attach a template..." picker
+ * reflects a previously-applied template instead of resetting to blank
+ * every time this panel remounts (e.g. after navigating away and back). */
+function matchingTemplateName(
+  overrides: Partial<DetectionConfig>,
+  customTemplates: Record<string, Partial<DetectionConfig>>
+): string {
+  const overrideEntries = Object.entries(overrides);
+  if (overrideEntries.length === 0) return "";
+  const candidates: { name: string; values: Partial<DetectionConfig> }[] = [
+    ...DETECTION_TEMPLATES.map((t) => ({ name: t.label, values: t.values })),
+    ...Object.entries(customTemplates).map(([name, values]) => ({ name, values })),
+  ];
+  const match = candidates.find(({ values }) => {
+    const entries = Object.entries(values);
+    if (entries.length !== overrideEntries.length) return false;
+    return entries.every(([key, value]) => (overrides as Record<string, unknown>)[key] === value);
+  });
+  return match?.name ?? "";
+}
+
 /** Per-camera Detection Tuning + severity controls, shown under each
  * camera's rule card so a specific camera (e.g. a cash register or a quiet
  * back office) can run hotter/cooler or always be treated as a fixed
@@ -53,6 +75,7 @@ export function CameraDetectionTuning({
         setData(detectionRes);
         setSeverity(severityRes.severity);
         setSeverityLevels(severityRes.severity_levels);
+        setSelectedTemplate(matchingTemplateName(detectionRes.overrides, customTemplates));
       } catch (err) {
         toast.error(`Failed to load detection settings for "${cameraId}": ${(err as Error).message}`);
       } finally {
