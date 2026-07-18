@@ -16,7 +16,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, BROWSER_CAMERA_SOURCE, type Camera } from "@/lib/api";
+import { DETECTION_TEMPLATES } from "@/lib/detection-templates";
 import { Plus } from "lucide-react";
+
+// New cameras default to the "Home" detection tuning preset, the most
+// broadly sensible starting point (quiet residential scenes), so a freshly
+// connected camera isn't left on bare global defaults until someone visits
+// the Detection Tuning tab.
+const DEFAULT_DETECTION_TEMPLATE = DETECTION_TEMPLATES.find((t) => t.label === "Home");
 
 type CameraKind = "rtsp" | "mobile" | "webcam" | "laptop" | "file";
 
@@ -85,6 +92,10 @@ export function AddCameraDialog({ onSaved }: { onSaved: (cameras: Camera[]) => v
         id: id.trim(),
         source: isLaptop ? BROWSER_CAMERA_SOURCE : source.trim(),
       });
+      if (DEFAULT_DETECTION_TEMPLATE) {
+        // Best-effort - don't block/fail camera creation if this call fails.
+        api.updateCameraDetectionConfig(id.trim(), DEFAULT_DETECTION_TEMPLATE.values).catch(() => {});
+      }
       onSaved(res.cameras);
       toast.success(`"${id}" connected. It'll appear on the dashboard automatically.`);
       setOpen(false);
